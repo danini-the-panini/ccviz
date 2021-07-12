@@ -1,0 +1,362 @@
+<head>
+  <title>Trends</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@3.4.1/dist/chart.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/luxon@2.0.1/build/global/luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1.0.0/dist/chartjs-adapter-luxon.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/lodash@4.17.21/lodash.min.js"></script>
+  <style>
+    html {
+      font-family: 'Comic Sans MS', sans-serif;
+    }
+
+    .column {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .row {
+      display: flex;
+      flex-direction: row;
+      height: 25vw;
+    }
+
+    .chart {
+      border: 1px dotted gray;
+      width: 50%;
+    }
+
+    .chart.loading {
+      background-image: url('http://www.viajeporindia.com/imagenes/index/vacunas/platano.gif');
+      background-position: center;
+      background-repeat: no-repeat;
+      image-rendering: pixelated;
+    }
+
+    h1 {
+      text-align: center;
+      color: purple;
+      height: 50px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    h1.loading::before, h1.loading::after {
+      content: '';
+      width: 50px;
+      height: 50px;
+      display: inline-block;
+      background-image: url('http://www.viajeporindia.com/imagenes/index/vacunas/platano.gif');
+      background-position: center;
+      background-repeat: no-repeat;
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+
+<input type="password" id="api_token" placeholder="API KEY"/>
+<input type="text" id="repo_token" placeholder="REPO TOKEN" />
+<label for="from_date">Since:</label>
+<input type="date" id="from_date" />
+<button id="go_button">GO!</button>
+
+<h1 id="repo_name">N/A</h1>
+
+<div class="column">
+  <div class="row">
+    <div class="chart"><canvas id="tech_debt"></canvas></div>
+    <div class="chart"><canvas id="loc"></canvas></div>
+  </div>
+  <div class="row">
+    <div class="chart"><canvas id="test_coverage"></canvas></div>
+    <div class="chart"><canvas id="diff_coverage"></canvas></div>
+  </div>
+</div>
+
+<script>
+  const { DateTime } = luxon;
+
+  let apiToken = document.getElementById('api_token');
+  let repoToken = document.getElementById('repo_token');
+  let fromDate = document.getElementById('from_date');
+  let repoNameH1 = document.getElementById('repo_name');
+
+  let techDebtChartInst = null;
+  let testCoverageChartInst = null;
+  let diffCoverageChartInst = null;
+  let locChartInst = null;
+
+  apiToken.value = localStorage.getItem('api_token');
+  repoToken.value = localStorage.getItem('repo_token');
+  fromDate.value = localStorage.getItem('from_date');
+
+  async function loadRepo() {
+    repoNameH1.textContent = 'Loading';
+    document.title = `loading... | Trends`;
+    let response = await fetch(`https://api.codeclimate.com/v1/repos/${repoToken.value}`, {
+      headers: { 'Authorization': `Token token=${apiToken.value}` }
+    });
+    let json = await response.json();
+    let repoName = json.data.attributes.human_name;
+    repoNameH1.textContent = repoName;
+    document.title = `${repoName} | Trends`;
+  }
+
+  async function timeseries(metric) {
+    let response = await fetch(`https://api.codeclimate.com/v1/repos/${repoToken.value}/metrics/${metric}?filter[from]=${fromDate.value}&filter[to]=${new Date().toISOString().split('T')[0]}`, {
+      headers: { 'Authorization': `Token token=${apiToken.value}` }
+    });
+    if (response.status >= 400) throw new Error(response.statusText);
+    let json = await response.json();
+    return json.data.attributes.points;
+  }
+
+  function multilineChart(el, labels, datasets, { titleText, ...moreConfig }) {
+    const data = {
+      labels: labels,
+      datasets: datasets.map(({ label, points, color, ...xtra }) => ({
+        type: 'line',
+        label: label,
+        backgroundColor: color,
+        borderColor: color,
+        ...xtra
+      }))
+    };
+
+    const config = _.merge({
+      type: 'line',
+      data,
+      options: {
+        plugins: {
+          title: {
+            display: true,
+            text: titleText,
+          },
+          tooltip: {
+            position: 'nearest'
+          }
+        },
+        responsive: true,
+        interaction: {
+          mode: 'index',
+          intersect: false,
+        },
+        stacked: false,
+        scales: {
+          x: {
+            type: 'time',
+            display: true,
+            offset: true,
+            time: {
+              unit: 'month'
+            }
+          },
+          y: {
+            type: 'linear',
+            display: true,
+            position: 'left'
+          }
+        }
+      }
+    }, moreConfig);
+
+    return new Chart(
+      el,
+      config
+    );
+  }
+
+  async function techDebtChart() {
+    let el = document.getElementById('tech_debt');
+    el.closest('.chart').classList.add('loading');
+
+    if (techDebtChartInst) {
+      techDebtChartInst.destroy();
+    }
+
+    let techDebtData = await timeseries('technical_debt_ratio');
+    let remediationMinutes = await timeseries('remediation_minutes');
+
+    techDebtChartInst = multilineChart(
+      el,
+      techDebtData.map(x => DateTime.fromSeconds(x.timestamp).toISO()),
+      [
+        {
+          label: 'Technical debt ratio',
+          yAxisID: "y",
+          color: '#45d298',
+          data: techDebtData.map(x => x.value)
+        },
+        {
+          type: 'bar',
+          yAxisID: "y1",
+          label: 'Remediation time',
+          color: '#62a7cf',
+          data: remediationMinutes.map(x => x.value / 60)
+        }
+      ],
+      { 
+        titleText: 'Technical Debt',
+        options: {
+          scales: {
+            y: {
+              position: 'left',
+              ticks: {
+                color: '#45d298',
+                callback(value) {
+                  return `${value} %`;
+                },
+              }
+            },
+            y1: {
+              type: 'linear',
+              display: true,
+              position: 'right',
+              grid: {
+                drawOnChartArea: false,
+              },
+              ticks: {
+                color: '#62a7cf',
+                callback(value) {
+                  return `${value} hrs`;
+                },
+              }
+            }
+          }
+        }
+      }
+    );
+
+    el.closest('.chart').classList.remove('loading');
+  }
+
+  function coverageColor(context) {
+    if (context.tick.value > 90) {
+      return '#B6C68F';
+    } else if (context.tick.value > 70) {
+      return '#C6BD8F';
+    } else if (context.tick.value > 60) {
+      return '#C6A48D';
+    } else {
+      return '#C48A8A';
+    }
+  }
+
+  const COVERAGE_CHART_OPTIONS = {
+    scales: {
+      y: {
+        grid: {
+          drawBorder: false,
+            color: coverageColor
+        },
+        min: 0,
+        max: 100,
+        ticks: {
+          callback(value) {
+            return `${value} %`;
+          },
+        }
+      }
+    }
+  };
+
+  async function testCoverageChart() {
+    let el = document.getElementById('test_coverage');
+    el.closest('.chart').classList.add('loading');
+
+    if (testCoverageChartInst) {
+      testCoverageChartInst.destroy();
+    }
+
+    let testCoverage = await timeseries('test_coverage');
+    testCoverageChartInst = multilineChart(el,
+      testCoverage.map(x => DateTime.fromSeconds(x.timestamp).toISO()),
+      [{ label: 'Coverage', data: testCoverage.map(x => x.value), color: '#45d298' }],
+      { 
+        titleText: 'Total Test Coverage',
+        options: COVERAGE_CHART_OPTIONS
+      }
+    );
+    el.closest('.chart').classList.remove('loading');
+  }
+
+  async function diffCoverageChart() {
+    let el = document.getElementById('diff_coverage');
+    el.closest('.chart').classList.add('loading');
+
+    if (diffCoverageChartInst) {
+      diffCoverageChartInst.destroy();
+    }
+
+    let points = await timeseries('diff_coverage');
+    diffCoverageChartInst = multilineChart(el,
+      points.map(x => DateTime.fromSeconds(x.timestamp).toISO()),
+      [{ label: 'Coverage', data: points.map(x => x.value), color: '#45d298' }],
+      {
+        titleText: 'Coverage on New Code',
+        options: COVERAGE_CHART_OPTIONS
+      }
+    );
+    el.closest('.chart').classList.remove('loading');
+  }
+
+  const LANG_COLORS = {
+    'Ruby': '#C42D5A',
+    'JavaScript': '#45d298'
+  }
+
+  async function locChart() {
+    let el = document.getElementById('loc');
+    el.closest('.chart').classList.add('loading');
+
+    if (locChartInst) {
+      locChartInst.destroy();
+    }
+
+    const languages = ['Ruby', 'JavaScript'];
+
+    let points = await Promise.all(languages.map(async lang => {
+      try {
+        let points = await timeseries(`loc.${lang}`);
+        return { label: lang, color: LANG_COLORS[lang], data: points.map(x => x.value), points };
+      } catch (error) {
+        console.log(`no loc data for language ${lang}`);
+        return null;
+      }
+    }));
+    points = points.filter(x => x);
+    locChartInst = multilineChart(el,
+      points[0].points.map(x => DateTime.fromSeconds(x.timestamp).toISO()),
+      points,
+      { 
+        titleText: 'Source Lines of Code',
+        options: { scales: { y: { min: 0 } } }
+      }
+    );
+    el.closest('.chart').classList.remove('loading');
+  }
+
+  let goButton = document.getElementById('go_button');
+  goButton.addEventListener('click', async () => {
+    try {
+      localStorage.setItem('api_token', apiToken.value);
+      localStorage.setItem('repo_token', repoToken.value);
+      localStorage.setItem('from_date', fromDate.value);
+
+      repoNameH1.classList.add('loading');
+
+      await Promise.all([
+        loadRepo(),
+        techDebtChart(),
+        testCoverageChart(),
+        diffCoverageChart(),
+        locChart()
+      ]);
+    } catch (error) {
+      console.error(error);
+      alert(error.message);
+    } finally {
+      repoNameH1.classList.remove('loading');
+    }
+  });
+</script>
